@@ -516,3 +516,272 @@ def handle_callback(cb):
     elif data == "m:downloads":
         if mid: animate_search(mid, "🔍 Counting downloads...")
         edit_msg(mid, scr_downloads(state), back_kb()) if mid else
+        scr_downloads(state), back_kb()) if mid else reply(scr_downloads(state), back_kb())
+    elif data == "m:list":
+        if mid: animate_search(mid, "🔍 Loading full list...")
+        edit_msg(mid, scr_list(state), back_kb()) if mid else reply(scr_list(state), back_kb())
+    elif data == "m:help":
+        edit_msg(mid, HELP, back_kb()) if mid else reply(HELP, back_kb())
+    elif data.startswith("a:"):
+        start_flow(data[2:])
+    elif data.startswith("apg:"):
+        did = data[4:]
+        save(op_approve(state, did, None))
+        reply("Approved: %s (%d day(s))." % (did, st_days(state)), main_kb())
+    elif data.startswith("d:"):
+        p = get_pending(state)
+        if p and p["step"] in ("days", "pick"):
+            finish_days_choice(p, int(data[2:]))
+        else:
+            reply("Ye choice purani ho gayi hai - menu se phir shuru karo.", main_kb())
+    elif data.startswith("cnt:"):
+        p = get_pending(state)
+        if p and p["action"] == "genlist" and p["step"] == "count":
+            if mid: animate_search(mid, "🎲 Keys bana raha hu...")
+            days = int(p["data"] or st_days(state))
+            lines = [random_key(days) for _ in range(int(data[4:]))]
+            save(set_pending(op_add_keys(state, lines), ""))
+            reply("Added %d random key(s), %d day(s):\n\n%s\n\nBechne ke baad Mark Key Used se lock kar dena." % (len(lines), days, "\n".join(lines)), main_kb())
+        else:
+            reply("Ye choice purani ho gayi hai.", main_kb())
+    elif data == "cf:revoke":
+        p = get_pending(state)
+        if p and p["action"] == "revoke":
+            did = p["data"]
+            save(set_pending(op_revoke_full(state, did), ""))
+            reply("🚫 Revoked + BLOCKED: %s\nUser ka app agle open par band hoga aur phir se key mangega." % did, main_kb())
+        else:
+            reply("Ye action purana ho gaya hai.", main_kb())
+
+# ---------------- Text commands (v8 compatible) ----------------
+
+def handle_command(text):
+    parts = text.strip().split()
+    if not parts:
+        return
+    cmd = parts[0].lower().split("@")[0]
+    args = parts[1:]
+    state, mid = get_state()
+
+    if cmd in ("/start", "/menu"):
+        reply(scr_dashboard(state), main_kb())
+    elif cmd == "/help":
+        reply(HELP, back_kb())
+    elif cmd == "/init":
+        if mid:
+            reply("Control message already exists and is pinned.", main_kb())
+        else:
+            set_state(DEFAULT_STATE, None)
+            reply("Control message created and pinned. Apps will read this list now.", main_kb())
+    elif cmd == "/approve":
+        if not args:
+            return reply("Use: /approve DEVICEID [days or YYYY-MM-DD]")
+        set_state(op_approve(state, args[0], args[1] if len(args) > 1 else None), mid)
+        reply("Approved: %s (%s)" % (args[0].upper(), spec_of(args[1] if len(args) > 1 else None, st_days(state))), main_kb())
+    elif cmd in ("/revoke", "/remove"):
+        if not args:
+            return reply("Use: /revoke DEVICEID")
+        set_state(op_revoke_full(state, args[0]), mid)
+        reply("Revoked + BLOCKED: %s\nUska app agle open par band ho jayega aur phir se key mangega. (Wapas chalu karna ho to /approve kar dena - block khud hat jayega.)" % args[0].upper(), main_kb())
+    elif cmd == "/days":
+        if not args or not args[0].isdigit():
+            return reply("Use: /days N")
+        set_state(op_set_days(state, int(args[0])), mid)
+        reply("Global valid time: %s day(s)." % args[0], main_kb())
+    elif cmd == "/genkey":
+        if not args:
+            return reply("Use: /genkey DEVICEID [days or YYYY-MM-DD]")
+        key, label = device_key(args[0], args[1] if len(args) > 1 else None)
+        reply("Device key for %s\nValid till: %s\n\n%s" % (args[0].upper(), label, key), main_kb())
+    elif cmd == "/genlist":
+        days = int(args[0]) if args and args[0].isdigit() else st_days(state)
+        count = min(int(args[1]), 50) if len(args) > 1 and args[1].isdigit() else 5
+        lines = [random_key(days) for _ in range(count)]
+        set_state(op_add_keys(state, lines), mid)
+        reply("Added %d random key(s):\n\n%s" % (count, "\n".join(lines)), main_kb())
+    elif cmd == "/used":
+        if len(args) < 2:
+            return reply("Use: /used KEY BUYERDEVICEID [YYYY-MM-DD]")
+        new, done = op_mark_used(state, args[0], args[1], args[2] if len(args) > 2 else None)
+        if done:
+            set_state(new, mid)
+            reply("Key marked USED for %s." % args[1].upper(), main_kb())
+        else:
+            reply("Key not found in the fresh list.")
+    elif cmd in ("/list", "/state"):
+        reply(scr_list(state), back_kb())
+    elif cmd == "/users":
+        reply(scr_users(state), back_kb())
+    elif cmd == "/stats":
+        reply(scr_dashboard(state), main_kb())
+    else:
+        reply("Unknown command. Buttons use karo ya /help", main_kb())
+
+def process_update(upd):
+    cb = upd.get("callback_query")
+    if cb:
+        from_id = str((cb.get("from") or {}).get("id", ""))
+        if from_id == ADMIN:
+            try:
+                handle_callback(cb)
+            except Exception as e:
+                print("callback error", e)
+        return
+    msg = upd.get("message") or {}
+    if not msg:
+        return
+    chat_id = str((msg.get("chat") or {}).get("id", ""))
+    from_id = str((msg.get("from") or {}).get("id", ""))
+    if chat_id != ADMIN or from_id != ADMIN:
+        return  # owner only
+    text = msg.get("text") or ""
+    if text.startswith("/"):
+        handle_command(text)
+    elif text.strip():
+        if not handle_pending_text(text):
+            reply("Samajh nahi aaya. Menu se button dabao ya /help dekho.", main_kb())
+
+
+# ---------------- App API (host URL) ----------------
+# The app knows ONLY the host URL (assets kmj_verify.json -> host_url).
+# No bot token / chat id inside the app. This server does all Telegram
+# work: reads the pinned control list, keeps the user registry (#U
+# lines) and forwards approval requests to the admin.
+
+def _clean(v, n=60):
+    return str(v or "").replace("|", " ").replace("\n", " ").replace("\r", " ").strip()[:n]
+
+def registry_upsert(text, did, model, battery, status):
+    """Insert/update this device's #U line. Returns (new_text, changed)."""
+    now = int(time.time() * 1000)
+    did = _clean(did, 24).upper()
+    if len(did) < 8:
+        return text, False
+    try:
+        battery = int(battery)
+    except Exception:
+        battery = -1
+    status = "ACTIVE" if str(status).upper() == "ACTIVE" else "PENDING"
+    model = _clean(model) or "Unknown"
+    lines = text.split("\n")
+    mark = "#U|" + did + "|"
+    for i, l in enumerate(lines):
+        if l.startswith(mark):
+            parts = l.split("|")
+            first = int(parts[6]) if len(parts) > 6 and parts[6].isdigit() else now
+            last = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            old_status = parts[5] if len(parts) > 5 else ""
+            if now - last < 6 * 3600 * 1000 and old_status == status:
+                return text, False
+            lines[i] = "#U|%s|%s|%d|%d|%s|%d" % (did, model, battery, now, status, first)
+            return "\n".join(lines), True
+    lines.append("#U|%s|%s|%d|%d|%s|%d" % (did, model, battery, now, status, now))
+    return "\n".join(lines), True
+
+def marker_fresh(text, did, hours=6):
+    now = int(time.time() * 1000)
+    for l in text.split("\n"):
+        if l.startswith("#Q|" + did + "|"):
+            try:
+                return now - int(l.split("|")[2]) < hours * 3600 * 1000
+            except Exception:
+                return False
+    return False
+
+def marker_set(text, did):
+    now = int(time.time() * 1000)
+    lines = [l for l in text.split("\n") if not l.startswith("#Q|" + did + "|")]
+    lines.append("#Q|%s|%d" % (did, now))
+    return "\n".join(lines)
+
+def api_state(q):
+    """GET ?kmj=state&did=..&report=1&status=..&model=..&battery=..
+    Returns the control list as PLAIN TEXT for the app."""
+    state, mid = get_state()
+    did = (q.get("did") or [""])[0]
+    if did and q.get("report", ["0"])[0] == "1":
+        new, changed = registry_upsert(
+            state, did, (q.get("model") or [""])[0],
+            (q.get("battery") or ["-1"])[0], (q.get("status") or ["PENDING"])[0])
+        if changed:
+            set_state(new, mid)
+            state = new
+    return state
+
+def api_request(body):
+    """POST {"kmj":"request","did":..,"model":..,"battery":..}
+    Registers the device and notifies the admin (max once per 6h)."""
+    did = _clean(body.get("did"), 24).upper()
+    if len(did) < 8:
+        return {"ok": False, "error": "bad did"}
+    state, mid = get_state()
+    state, _ = registry_upsert(state, did, body.get("model"), body.get("battery"), "PENDING")
+    if not marker_fresh(state, did):
+        api("sendMessage", {"chat_id": ADMIN,
+                            "text": "KMJ VERIFY - New Request\nDevice ID: %s\nModel: %s\n\nApprove: Pending button in panel, or /approve %s 30" % (did, _clean(body.get("model")) or "-", did)})
+        state = marker_set(state, did)
+    set_state(state, mid)
+    return {"ok": True}
+
+# ---------------- Vercel webhook ----------------
+from http.server import BaseHTTPRequestHandler
+
+
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        if q.get("kmj", [""])[0] == "state":
+            txt = api_state(q)
+            body = txt.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        body = json.dumps({"ok": True, "bot": "KMJ VERIFY v12 Control Panel", "mode": "webhook", "owner_set": bool(ADMIN)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(n).decode() or "{}"
+            upd = json.loads(raw)
+            if isinstance(upd, dict) and upd.get("kmj") == "request":
+                api_request(upd)
+            else:
+                process_update(upd)
+        except Exception as e:
+            print("POST error", e)
+        body = b'{"ok":true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+# ---------------- Polling (Termux / Antideploy) ----------------
+if __name__ == "__main__":
+    print("KMJ VERIFY v12 bot polling... owner set:", bool(ADMIN))
+    api("deleteWebhook", {})
+    offset = 0
+    while True:
+        r = api("getUpdates", {"offset": offset, "timeout": 30})
+        if r.get("ok"):
+            for upd in r.get("result", []):
+                offset = upd["update_id"] + 1
+                try:
+                    process_update(upd)
+                except Exception as e:
+                    print("update error", e)
+        else:
+            time.sleep(3)
+      
